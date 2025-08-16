@@ -1,0 +1,690 @@
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.util.Vector;
+import java.math.BigInteger;
+
+//String strDistanceMetric = "minExpDistance";
+String strDistanceMetric = "bhattacharyyaDistance";
+//String strDistanceMetric = "KL_Divergence";
+//String strDistanceMetric = "jensenShannonDivergence";
+
+boolean isFeaturesToTextFile  = true;
+
+//String outputType = "LBP";
+String outputType = "LDGBP";
+//String outputType = "originalImage";
+
+//Aspect ratio is 4:3
+int numOfColumns = 16; //8
+int numOfRows    = 12; //6
+
+String trainFilename = "TrainData.arff";
+File TrainFile;
+
+String testFilename  = "TestData.arff";
+File TestFile;
+
+String database = "train/train/"; //"FlickrFaceDatabase";     //NumOfClasses = 30
+//String database = "FlickrFaceDatabase2";  //NumOfClasses = 208
+//String database = "FlickrFaceDatabase3";  //NumOfClasses = 208
+//String database = "MMU1IrisDatabase";     //NumOfClasses = 45
+//String database = "MMU2IrisDatabase";     //NumOfClasses = 100
+
+int numOfClasses = 3;
+float trainDBRatio = 0.70F;
+int histLength = 8;
+
+BigInteger seed1 = BigInteger.valueOf( 0 );
+BigInteger seed2 = BigInteger.valueOf( 0 );
+
+int totalBlocks = 0;
+
+void setup()
+{
+  if( isFeaturesToTextFile )
+  {
+    TrainFile = new File( dataPath( trainFilename ) );
+    
+    if( TrainFile.exists() && TrainFile.isFile() )
+    {
+      TrainFile.delete();
+    }
+    
+    createFile( TrainFile );
+    
+    TestFile = new File( dataPath( testFilename ) );
+    
+    if( TestFile.exists() && TestFile.isFile() )
+    {
+      TestFile.delete();
+    }
+    
+    createFile( TestFile );
+  }
+  
+  ArrayList objectDatabase = new ArrayList();
+  ArrayList nameDatabase = new ArrayList();
+  
+  trainDatabase( objectDatabase, nameDatabase, 1, numOfClasses );
+  testDatabase( objectDatabase, nameDatabase, 1, numOfClasses );
+}
+
+float [] getFeatures( PImage img, String path )
+{ 
+  int adjustedWidth  = img.width;
+  int adjustedHeight = img.height;
+  
+  // Adjust width to the nearest value that is divisible by numOfColumns
+  int lowerWidth = adjustedWidth;
+  while (lowerWidth % numOfColumns != 0)
+  {
+    lowerWidth--;
+  }
+    
+  int upperWidth = adjustedWidth;
+  while (upperWidth % numOfColumns != 0)
+  {
+    upperWidth++;
+  }
+
+  // Choose the nearest width
+  adjustedWidth = (adjustedWidth - lowerWidth < upperWidth - adjustedWidth) ? lowerWidth : upperWidth;
+
+  // Adjust height to the nearest value that is divisible by numOfRows
+  int lowerHeight = adjustedHeight;
+  while (lowerHeight % numOfRows != 0)
+  {
+    lowerHeight--;
+  }
+    
+  int upperHeight = adjustedHeight;
+  while (upperHeight % numOfRows != 0)
+  {
+    upperHeight++;
+  }
+
+  // Choose the nearest height
+  adjustedHeight = (adjustedHeight - lowerHeight < upperHeight - adjustedHeight) ? lowerHeight : upperHeight;
+  
+  img.resize( adjustedWidth, adjustedHeight );
+  img.updatePixels();
+  
+  if( outputType == "LBP" )
+    img = getLBPImage( img );
+  else if( outputType == "LDGBP" )
+    img = getLDGBPImage( img );
+  else if( outputType == "originalImage" )
+    img.filter( GRAY );
+    
+  img.save("output/" + path);
+  
+  ArrayList histList = new ArrayList();
+  
+  int blockWidth  = img.width / numOfColumns;
+  int blockHeight = img.height / numOfRows;
+        
+  // Calculate the total number of blocks
+  totalBlocks = 0;
+  
+  for( int y = 0; y < img.height; y += blockHeight )
+  {
+    for( int x = 0; x < img.width; x += blockWidth )
+    {
+      totalBlocks++;
+      
+      // Blok boyutlarını belirle
+      int w = min(blockWidth, img.width - x);
+      int h = min(blockHeight, img.height - y);
+      
+      // Bloku kırp ve ekrana çiz
+      PImage block = img.get(x, y, w, h);
+      
+      float [] hist = new float[histLength];
+      
+      for( int i = 0; i < block.pixels.length; i++ )
+      {
+        hist[ (int) ( brightness( block.pixels[i] ) / ( 256 / histLength ) ) ]++;
+      }
+      
+      for( int i = 0; i < histLength; i++ )
+      {
+        hist[i] /= block.pixels.length;
+        histList.add( hist[i] );
+      }
+      
+    }
+  }
+  
+  float [] histArr = new float[histList.size()];
+  
+  float sum = 0F;
+  
+  for( int i = 0; i < histArr.length; i++ )
+  {
+    histArr[i] = (float) ( (Float) histList.get( i ) );
+    sum += histArr[i];
+  }
+  
+  for( int i = 0; i < histArr.length; i++ )
+  {
+    histArr[i] /= sum;
+  }
+    
+  return histArr;
+}
+
+String [] readImagesPath( String dir )
+{
+  File folder = new File( dir );
+  File [] listOfFiles = folder.listFiles();
+  
+  String [] imgNames = null;
+  
+  if( listOfFiles != null && listOfFiles.length > 0 )
+  {
+    imgNames = new String[listOfFiles.length];
+    
+    int imgCounter = 0;
+    
+    for( File file : listOfFiles )
+    {
+      if( file.isFile() && file.exists() )
+      {
+        imgNames[imgCounter] = file.getName();
+        imgCounter++;
+      }
+      else
+      {
+        println( "File is null!" );
+      }
+    }
+  }
+  else
+  {
+    println( "Folder is empty!" );
+  }
+  
+  return imgNames;
+}
+
+void trainDatabase( ArrayList objectDatabase, ArrayList nameDatabase, int start, int end )
+{ 
+  println( "-------------------------------------------" );
+  println( "Training started!" );
+  
+  int numOfFeatures = totalBlocks * histLength;
+        
+  String header = "@RELATION objectRecognition\n";
+          
+  for( int s = 1; s <= numOfFeatures; s++ )
+    header += "@ATTRIBUTE A" + s + " NUMERIC\n";
+  
+  header += "@ATTRIBUTE class {";
+  
+  for( int r = 1; r <= numOfClasses; r++ )
+    header += r + ", ";
+  
+  header += "}\n@DATA\n";
+  
+  appendTextToFile( TrainFile, header );
+  
+  for( int person = start; person <= end; person++ )
+  {
+    String [] imgNames = readImagesPath( sketchPath( "data/" + database + "/" + person + "/" ) );
+    
+    if( imgNames != null && imgNames.length > 0 )
+    {
+      shuffleArray( imgNames, 1 );
+      
+      for( int ii = 0; ii < floor( imgNames.length * trainDBRatio ); ii++ )
+      {
+        PImage img = loadImage( database + "/" + person + "/" + imgNames[ii] );
+        
+        if( img != null && img.width > 0 && img.height > 0 )
+        {
+          img.loadPixels();
+            
+          img.filter( GRAY );
+          
+          float [] pdfVector = getFeatures( img, database + "/train/" + person + "/" + imgNames[ii] );
+          
+          if( pdfVector != null && pdfVector.length > 0 )
+          {
+            String str = "";
+            
+            for( int s = 0; s < pdfVector.length; s++ )
+            str += pdfVector[s] + ",";
+            
+            
+            if( isFeaturesToTextFile )
+            {
+              str += String.valueOf( person );
+              appendTextToFile( TrainFile, str );
+            }
+            
+            objectDatabase.add( pdfVector );
+            nameDatabase.add( String.valueOf( person ) );
+            
+            println( imgNames[ii] + " was registered to database." );
+          }
+        }
+      }
+    }
+  }
+  
+  println( "-------------------------------------------" );
+  println( "Training finished!" );
+  println( "-------------------------------------------" );
+}
+
+void testDatabase( ArrayList objectDatabase, ArrayList nameDatabase, int start, int end )
+{
+  long startTime = System.currentTimeMillis();
+  
+  println( "Testing started!" );
+  
+  int numOfFeatures = totalBlocks * histLength;
+  
+  String header = "@RELATION objectRecognition\n";
+          
+  for( int s = 1; s <= numOfFeatures; s++ )
+    header += "@ATTRIBUTE A" + s + " NUMERIC\n";
+  
+  header += "@ATTRIBUTE class {";
+  
+  for( int r = 1; r <= numOfClasses; r++ )
+    header += r + ", ";
+  
+  header += "}\n@DATA\n";
+  
+  appendTextToFile( TestFile, header );
+  
+  int numOfTrueDetections  = 0;
+  int numOfFalseDetections = 0;
+  
+  int counter = 0;
+  
+  float accuracy = 0.0f;
+  
+  for( int person = start; person <= end; person++ )
+  {
+    String [] imgNames = readImagesPath( sketchPath( "data/" + database + "/" + person + "/" ) );
+    
+    if( imgNames != null && imgNames.length > 0 )
+    {
+      shuffleArray( imgNames, 2 );
+      
+      for( int ii = imgNames.length - 1; ii >= floor( imgNames.length * trainDBRatio ); ii-- )
+      {
+        PImage img = loadImage( database + "/" + person + "/" + imgNames[ii] );
+        
+        if( img != null && img.width > 0 && img.height > 0 )
+        {
+          img.loadPixels();
+          
+          if( ( objectDatabase.size() > 0 ) && ( nameDatabase.size() > 0 ) )
+          {
+            img.filter( GRAY );
+            
+            float [] pdfVector = getFeatures( img, database + "/test/" + person + "/" + imgNames[ii] );
+            
+            String str = "";
+            
+            if( pdfVector != null && pdfVector.length > 0 )
+            {
+              for( int s = 0; s < pdfVector.length; s++ )
+                str += pdfVector[s] + ",";
+            
+              if( isFeaturesToTextFile )
+              {
+                str += String.valueOf( person );
+                appendTextToFile( TestFile, str );
+              }
+              
+              String [] result = compare( pdfVector, objectDatabase, nameDatabase );
+              println( "Recognition Result for Person " + person + " : " + result[0] + ", minDistance: " + result[1] );
+              
+              counter++;
+              
+              int prediction = Integer.parseInt( result[0] );
+              int groundTruth = person;
+              
+              if( groundTruth == prediction )
+                numOfTrueDetections++;
+              else
+                numOfFalseDetections++;
+            }
+          }
+          else
+          {
+            println( "Database is empty!" );
+            println( "-------------------------------------------" );
+          }
+        }
+      }
+    }
+  }
+  
+  println( "-------------------------------------------" );
+  println( "Testing finished!" );
+  
+  accuracy = ( (float) numOfTrueDetections ) / ( counter == 0 ? 1 : counter );
+  
+  println( "-------------------------------------------" );
+  println( "Number of Instances: " + counter );
+  println( "Number of True Detections: " + numOfTrueDetections );
+  println( "Number of False Detections: " + numOfFalseDetections );
+  println( "Accuracy: " + accuracy );
+  println( "-------------------------------------------" );
+  
+  long endTime = System.currentTimeMillis();
+  
+  println( "Elapsed Time: " + ( endTime - startTime ) + " ms." );
+  println( "Average Elapsed Time for per Instance: " + ( endTime - startTime ) / ( counter == 0 ? 1 : counter ) + " ms." );
+  println( "-------------------------------------------" );
+}
+
+void appendTextToFile( File f, String text )
+{
+  try
+  {
+    PrintWriter out = new PrintWriter( new BufferedWriter( new FileWriter( f, true ) ) );
+    out.println( text );
+    out.close();
+  }
+  catch( IOException e )
+  {
+    e.printStackTrace();
+  }
+}
+
+void createFile( File f )
+{
+  File parentDir = f.getParentFile();
+  
+  try
+  {
+    parentDir.mkdirs(); 
+    f.createNewFile();
+  }
+  catch( Exception e )
+  {
+    e.printStackTrace();
+  }
+}
+
+public String [] compare(float [] currentObject, ArrayList<float[]> objectDb, ArrayList<String> nameDb)
+{
+  String [] result = new String[2]; 
+  /*
+   * Comparison through Normalized Cross Correlation distance metric
+   */
+  Vector<Float> distance = new Vector<Float>();
+  
+  for( float [] object : objectDb )
+  {
+    float dist = getDistance( object, currentObject, strDistanceMetric );
+    
+    distance.add( dist );
+  }
+
+  // select shortest distance
+  int shortest = 0;
+  float shortDist = (float) distance.get( 0 );
+  
+  for( int i = 1; i < distance.size(); i++ )
+  {
+    if( (float) distance.get( i ) < shortDist )
+    {
+      shortest = i;
+      shortDist = (float) distance.get( i );
+    }
+  }
+  
+  result[0] = nameDb.get( shortest );
+  result[1] = Float.toString( shortDist );
+  
+  return result;
+}
+
+float minExpDistance( float [] hist1, float [] hist2 )
+{
+  float[] average = new float[hist1.length];
+  
+  for (int i = 0; i < hist1.length; ++i)
+  {
+    average[i] += sqrt( hist1[i] * hist2[i] );
+  }
+  
+  float minExpCoeff  =  1F;
+  
+  for( int i = 0; i < hist1.length; i++ )
+  {
+    float minVal = min( sqrt( hist1[i] * average[i] ), sqrt( hist2[i] * average[i] ) );
+    
+    minExpCoeff *= exp( minVal );
+  }
+  
+  return 1F - log( minExpCoeff ); 
+}
+
+float bhattacharyyaDistance( float [] hist1, float [] hist2 )
+{
+  float bhattacharyyaCoeff = 0F;
+  
+  for( int i = 0; i < hist1.length; i++ )
+  {
+    bhattacharyyaCoeff += sqrt( hist1[i] * hist2[i] );
+  }
+  
+  return 1F - bhattacharyyaCoeff;
+}
+
+float klDivergence(float[] p1, float[] p2) {
+
+  float klDiv = 0.0;
+
+  for (int i = 0; i < p1.length; ++i) {
+    if (p1[i] == 0) { continue; }
+    if (p2[i] == 0.0) { continue; }
+
+  klDiv += p1[i] * log( p1[i] / p2[i] );
+  }
+
+  return 1F - exp( -klDiv / log( p1.length ) );
+}
+
+float jensenShannonDivergence(float[] p1, float[] p2)
+{
+  float[] average = new float[p1.length];
+  
+  for (int i = 0; i < p1.length; ++i)
+  {
+    average[i] += (p1[i] + p2[i]) / 2;
+  }
+  
+  return (klDivergence(p1, average) + klDivergence(p2, average)) / 2;
+}
+
+float getDistance( float [] hist1, float [] hist2, String strDistanceMetric )
+{
+  if( strDistanceMetric == "minExpDistance" )
+    return minExpDistance( hist1, hist2 );
+  else if( strDistanceMetric == "bhattacharyyaDistance" )
+    return bhattacharyyaDistance( hist1, hist2 );
+  else if( strDistanceMetric == "KL_Divergence" )
+    return klDivergence( hist1, hist2 );
+  else if( strDistanceMetric == "jensenShannonDivergence" )
+    return jensenShannonDivergence( hist1, hist2 );
+    
+  return 0F;
+}
+
+// Implementing Fisher–Yates shuffle
+void shuffleArray( String [] ar, int seedNo )
+{
+  float rnd = rand( seedNo );
+  
+  for( int i = ar.length - 1; i > 0; i-- )
+  {
+    int index = floor( rnd * i );
+    // Simple swap
+    String a = ar[index];
+    ar[index] = ar[i];
+    ar[i] = a;
+  }
+}
+
+float rand( int seedNo )
+{
+  int maxInteger = (int) pow( 2, 31 );
+  
+  BigInteger a = new BigInteger("1103515245");
+  BigInteger c = new BigInteger("12345");
+  BigInteger m = new BigInteger( String.valueOf( maxInteger ) );
+  
+  if( seedNo == 1 )
+  {
+    seed1 = ( ( a.multiply( seed1 ) ).add( c ) ).mod( m );
+    return ( (float) seed1.intValue() ) / maxInteger;
+  }
+  else if( seedNo == 2 )
+  {
+    seed2 = ( ( a.multiply( seed2 ) ).add( c ) ).mod( m );
+    return ( (float) seed2.intValue() ) / maxInteger;
+  }
+  
+  return 0F;
+}
+
+PImage getLBPImage( PImage img )
+{
+  PImage out = createImage( img.width, img.height, RGB );
+  
+  for( int y = 1; y < img.height - 1; y++ )
+  {
+    for( int x = 1; x < img.width - 1; x++ )
+    {
+      float sum = 0F;
+      
+      float center = brightness( img.pixels[ y * img.width + x ] );
+      
+      float n1 = brightness(img.pixels[(y - 1) * img.width + (x - 1)]);
+      float n2 = brightness(img.pixels[(y - 1) * img.width + x]);
+      float n3 = brightness(img.pixels[(y - 1) * img.width + (x + 1)]);
+      float n4 = brightness(img.pixels[y * img.width + (x + 1)]);
+      float n5 = brightness(img.pixels[(y + 1) * img.width + (x + 1)]);
+      float n6 = brightness(img.pixels[(y + 1) * img.width + x]);
+      float n7 = brightness(img.pixels[(y + 1) * img.width + (x - 1)]);
+      float n8 = brightness(img.pixels[y * img.width + (x - 1)]);
+      
+      if( n1 > center )
+      {
+        sum += 128;
+      }
+      if( n2 > center )
+      {
+        sum += 64;
+      }
+      if( n3 > center )
+      {
+        sum += 32;
+      }
+      if( n4 > center )
+      {
+        sum += 16;
+      }
+      if( n5 > center )
+      {
+        sum += 8;
+      }
+      if( n6 > center )
+      {
+        sum += 4;
+      }
+      if( n7 > center )
+      {
+        sum += 2;
+      }
+      if( n8 > center )
+      {
+        sum += 1;
+      }
+        
+      out.pixels[ y * out.width + x ] = color( sum );
+    }
+  }
+  
+  out.updatePixels();
+  
+  return out;
+}
+
+PImage getLDGBPImage( PImage img )
+{
+  int [][] SOBEL_X = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
+  int [][] SOBEL_Y = { {1, 2, 1}, {0, 0, 0}, {-1, -2, -1} };
+
+  PImage out = createImage( img.width, img.height, RGB );
+  
+  for( int i = 1; i < img.width - 1; i++ )
+  {
+    for( int j = 1; j < img.height - 1; j++ )
+    {
+      int Gx = 0;
+      
+      for( int k = -1; k <= 1; k++ )
+      {
+        for( int l = -1; l <= 1; l++ )
+        {
+          Gx += (int) brightness( img.pixels[ (j+l) * img.width + (i+k)] ) * SOBEL_X[k+1][l+1];
+        }
+      }
+      
+      int Gy = 0;
+      
+      for( int k = -1; k <= 1; k++ )
+      {
+        for( int l = -1; l <= 1; l++ )
+        {
+          Gy += (int) brightness( img.pixels[ (j+l) * img.width + (i+k)] ) * SOBEL_Y[k+1][l+1];
+        }
+      }
+      
+      float angle = atan2( Gy, Gx ); //direction [-PI,PI]
+      int angleColor = (int) ( (angle + PI) / TWO_PI * 255.0f );
+      float center = brightness( img.pixels[j * img.width + i] );
+      
+      out.pixels[ j * img.width + i ] = color( sqrt( angleColor * center ) );
+    }
+  }
+  
+  out.updatePixels();
+  
+  PImage out2 = createImage( img.width, img.height, GRAY );
+  
+  for( int i = 1; i < img.width - 1; i++ )
+  {
+    for( int j = 1; j < img.height - 1; j++ )
+    {
+      int center = (int) brightness( img.pixels[ j * img.width + i ] );
+      int center2 = (int) brightness( out.pixels[ j * img.width + i ] );
+      int sum = 0;
+      
+      sum += (brightness( out.pixels[ (j-1) * img.width + (i-1) ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,7) * center );
+      sum += (brightness( out.pixels[ (j-1) * img.width + (i)   ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,6) * center );
+      sum += (brightness( out.pixels[ (j-1) * img.width + (i+1) ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,5) * center );
+      sum += (brightness( out.pixels[ (j)   * img.width + (i+1) ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,4) * center );
+      sum += (brightness( out.pixels[ (j+1) * img.width + (i+1) ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,3) * center );
+      sum += (brightness( out.pixels[ (j+1) * img.width + (i)   ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,2) * center );
+      sum += (brightness( out.pixels[ (j+1) * img.width + (i-1) ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,1) * center );
+      sum += (brightness( out.pixels[ (j)   * img.width + (i-1) ] ) > 255 - center2 ? 1 : 0) * sqrt( pow(2,0) * center );
+      
+      out2.pixels[ j * img.width + i ] = color( sum / 2.26F );
+    }
+  }
+  
+  out2.updatePixels();
+  
+  return out2;
+}
